@@ -5,183 +5,231 @@
 clc;  clear; close all; format long g; format bank;
 rng(1); % NOTE 是否随机的标志
 %% 2 NOTE 设置参数结构体par
-par = struct('file',[],'inst',[]);
-    % par(1).file = struct('name',{'~'},'load',{0},'gene',{0});
-par(1).inst = struct('pho',{0.2},'gamma',{0.2});
-%% 3 从TempInstance中读取后缀为ccvrp的文件到结构体
-libDatas = readLibData('TempInstance','vrp'); %TODO 后期修改参数二未以提出author命名
-disp(libDatas)
+fileType = 'vrp';
+par = struct('file',[],'ins',[]);
+    % par.file = struct('name',{'~'},'load',{0},'gene',{0});
+par.ins = struct('pho',{0.2},'gamma',{0.2});
+%% 3 获取lib数据: 从TempInstance中读取后缀为vrp的文件到nested结构体libDatas
+libDatas = readLibData('TempInstance',fileType); %TODO 后期修改参数二未以提出author命名
+% disp(libDatas)
+%% 4 更新lib数据: 从libDates获取更新后可用的nested结构体insDatas
+insDatas = updateLibDatas(libDatas,par.ins,fileType);
+disp(insDatas(1));
+printstruct(insDatas(1));
+function insDatas = updateLibDatas(libDatas,insarg,fileType)
+%% 功能：通过参数para-更新Lib类型文本数据
 
-function libDatas = readLibData(libFolder,fileType)
-%% 功能：读取Lib类型文本数据
-%  libFolder - 存放读取文本的目录名
-%  fileType - 待读取文件类型
-%
-%  *Note - 嵌套结构体使用;arrayfun使用;*
-% 
+% *NOTE - 利用repmat初始化nested struct array* 
+insDatas.Node = struct('Coord',[],'Demand',[],'Distance',[]);
+insDatas.Customer = struct('Coord',[],'Demand',[],'IdxCluster',[],'Distance',[],'Compatible',[]);
+insDatas.Depot = struct('Coord',[],'Demand',[],'CustomerDistance',[],'ClusterDistance',[]);
+insDatas.Cluster = struct('Coord',[],'Demand',[],'Distance',[],'Compatible',[]);
+insDatas.Vehicle = struct('Capacity',[],'FixCost',[],'VariableCost',[],...
+    'PointCost',[],'MaxPoint',[]);
+insDatas.Veh_Cus = struct('FixCost',[],'VarCost',[],'Cost_Num',[],'Cost_Type',[]);
+% ,'NodeFixCost',[],'NodeVariableCost',[],    'NodeFVCost',[],'NodeFVTypeCost',[]);
+% insDatas.Node_Node = struct('Distance',[]);
+% insDatas.Customer_Customer = struct('Distance',[],'Compatible',[]);
+% insDatas.Cluster_Cluster = struct('Distance',[],'Compatible',[]);
 
-pathFileNames = getPathNames();
-libDatas = getLibDates();
+insDatas = repmat(insDatas,[length(libDatas) 1]);
+insargs = repmat(insarg,[length(libDatas) 1]);
+if strcmp('vrp', fileType)
+    % *NOTE - arrayfun-paraN传标量struct重复的参数*
+    insDatas = arrayfun(@VRP_Update,libDatas,insDatas,insargs); 
+elseif strcmp('ccvrp', fileType)
+    insDatas = arrayfun(@CCVRP_Update,libDatas,insDatas,insargs);
+end
 
-    function pathFileNames = getPathNames()
-        %%% 获取libFolder目录下所有文件名
-        % pathFileNames - cell array 存放文件名
-        % 如果存在不同类型的文件，用‘*’读取所有，如果读取特定类型文件，'.'加上文件类型，例如用‘.jpg’
+end
 
-        fileFolder=fullfile(strcat('.\',libFolder));
-        dirOutput=dir(fullfile(fileFolder,strcat('*.',fileType)));
-        fileNames={dirOutput.name}';
-        pathFileNames = strcat('.\', libFolder, '\', fileNames);
+function insData = VRP_Update(libData,insData,para)
+%% function [D] = VRP_Update()
+% 555 更新VRP's Lib数据
+
+
+%% 1 Get Node(Demand;Coord); Cluster(Demand;Coord); Customer(Coor; Demand);
+%% Number
+NodeNumber = length(libData.Node_Coord);
+DepotNumber = 1; % FIXME:当Depot不只一个或不在位置0/1时要修改;按DEPOT_SECTION计数
+CustomerNumber = NodeNumber - DepotNumber;
+VehicleNumber = sum(libData.VEHICLE_Number); %libData.VEHICLE_Number是每种类型车辆的数量
+
+%% Coord
+insData.Node.Coord = libData.Node_Coord;
+insData.Depot.Coord = libData.Node_Coord(DepotNumber,:);
+insData.Customer.Coord = libData.Node_Coord(DepotNumber+1:end,:);
+
+%% Demand
+insData.Node.Demand = libData.Node_Demand;
+insData.Depot.Demand = insData.Node.Demand(DepotNumber,:);
+insData.Customer.Demand = insData.Node.Demand(DepotNumber+1:end,:);
+
+%% Cluster
+[insData.Cluster.Coord, insData.Cluster.Demand, insData.Customer.IdxCluster ] = getCluster();
+
+    function [cluCoord,cluDemand,idx] = getCluster()
+        n = getClusterN(); % 1 NOTE ClusterNumber 聚类数 (NOTE 来自重要参数 para.pho [0,1])         
+        [idx, cluCoord,~,~] = kmeans(insData.Customer.Coord, n); % 2 NOTE K-means算法获取聚类质心Coord    
+        cluDemand = arrayfun(@(x) sum(insData.Customer.Demand (idx == x)), (1:n)' ); % 5 计算每个聚类的总需求 Demand;
+        % FIXME      ClusterNode_Coord = [ insData.Depot.Coord; insData.Cluster.Coord]; %将depot位置作为一个类放进去
+        
+        function ClusterNumber = getClusterN()
+            %%% 1 GET ClusterNumber 聚类数 (来自重要参数 pho)
+            % 如何确定聚类数 - 文献2016CIE采用pho*Q;
+            % 如何确定聚类最大容量;
+            % case1: 聚类容量<=最大车型容量; case2: 聚类容量全部>最大车型容量 case3: 聚类容量大于或小于最大车辆容量
+            
+            minClusterNumber = 1;
+            maxClusterNumber = NodeNumber - 1;
+            
+            pho = para.pho;
+            if (pho > 0 && pho < 1)
+                %   ClusterNumber = ceil(pho*sum(TSP_Demand(2:end)')/TSP_Capacity);
+                ClusterNumber = ceil(pho * maxClusterNumber);   % 聚类个数最小1个,最多不超过点的个数(单独成类)
+            elseif pho == 0 %如果pho=0, 只有一个聚类; pho不为0也可能只有一个聚类
+                ClusterNumber = minClusterNumber;
+            elseif pho == 1 %isinf(pho)
+                ClusterNumber = maxClusterNumber;
+            else
+                error('pho = %d, 不在[0,1]之间', pho);
+            end
+            
+            if (ClusterNumber < minClusterNumber || ClusterNumber > maxClusterNumber)
+                warning('ClusterNumber = %d, 超出范围', ClusterNumber);
+            else
+                fprintf('ClusterNumber = %d is in [1, %d] \n',ClusterNumber,maxClusterNumber);
+            end
+        end   
+        
     end
 
-    function libDatas = getLibDates()
-        %%% 迭代获取目录下每个文件数据
-        % libDatas - struct array 存放lib数据结构体
+%% Compatible
+[insData.Cluster.Compatible,insData.Customer.Compatible] = getCompatible();
 
-        n = length(pathFileNames);
-        % 判断读取文件后缀
-        if strcmp('vrp', fileType)
-            % *NOTE 标量结构体预分配*
-            libDatas(n,1) = struct('NAME',[],'BEST_KNOWN',[],'COMMENT',[],'VEHICLE_TYPE',[],...
-                'DIMENSION',[],'EDGE_WEIGHT_FORMAT',[],'EDGE_WEIGHT_TYPE',[],'VEHICLE_Capacity',[],'VEHICLE_FixCost',[],...
-                'VEHICLE_VariableCost',[],'VEHICLE_Number',[],'VEHICLE_FeePoint',[],'VEHICLE_MaxPoint',[],...
-                'Node_Coord',[],'Node_Demand',[],'DEPOT_SECTION',[]);
-            % *NOTE - arrayfun-pathFileNames传cell;libDatas传标量struct*
-            libDatas = arrayfun(@VRP_Input,pathFileNames,libDatas);
-        elseif strcmp('ccvrp', fileType)
-            libDatas(n,1) = struct('NAME',[],'TYPE',[],'COMMENT',[],'DIMENSION',[],...
-                'CAPACITY',[],'EDGE_WEIGHT_TYPE',[],'NODE_COORD_TYPE',[],'Node_Coord',[],...
-                'Demand',[],'Cluster',[],'DEPOT_SECTION',[]);
-            libDatas = arrayfun(@CCVRP_Input,pathFileNames,libDatas);
+    function [M_Cludepot,M_depot] = getCompatible()
+        %% GET M_Cludepot  聚类连通性 (0:可连通; 1:不可连通) 
+        %%% NOTE 重要技巧 
+        % gamma 越大, 0的个数越多, 连通性越好
+        n = length(insData.Cluster.Demand);
+        gamma = para.gamma;  % ClusterNumber=5 % gamma = 0.5;        
+        % 计算totalZeros :一共需要的0的个数,属于范围:[minZeros,maxZeros]
+        % gamma = 0.5; 应恰好只有一半连通性
+        minZeros = n;
+        maxZeros = n.^2;
+        totalZeros = minZeros + gamma * (maxZeros - minZeros);
+        
+        numZeros = minZeros;
+        M_Cludepot = ones(n,n);
+        M_Cludepot = M_Cludepot-diag(diag(M_Cludepot));
+        
+        %% TODO 去除while?
+        while 1
+            x = randi([1 n],1);
+            y = randi([1 n],1);
+            if numZeros >= totalZeros
+                break
+            elseif x ~= y && M_Cludepot(x,y)~=0
+                M_Cludepot(x,y) = 0;
+                M_Cludepot(y,x) = 0;
+                numZeros = numZeros + 2;
+            else
+                %   fprintf('x = %d = y = %d or M_Cludepot(x,y) = %d \n',x,y,M_Cludepot(x,y))
+            end
+        end
+        
+        % 需增加判断M_Cludepot是否为对称矩阵
+        if (totalZeros < minZeros || totalZeros > maxZeros || numZeros < totalZeros)
+            error('totalZeros = %d, 超出范围', totalZeros);
+        elseif (gamma <0 || gamma >1)
+            error('gamma = %d, 超出范围 [0,1]', gamma);
         else
-            error('Error. \n 文件类型错误.')
+            fprintf('CORRECT : totalZeros = %d in [%d, %d] and gamma = %d, \n',totalZeros,minZeros,maxZeros,gamma);
+        end
+        
+        %% 4 GET M_depot 点点连通性 基于聚类连通性的扩展
+        % FIXME 去除for
+        M_depot = zeros(CustomerNumber,CustomerNumber);
+        for tempi = 1 : CustomerNumber - 1
+            for tempj = tempi + 1 : CustomerNumber
+                clusteri = insData.Customer.IdxCluster(tempi);
+                clusterj = insData.Customer.IdxCluster(tempj);
+                if M_Cludepot(clusteri,clusterj) == 1
+                    M_depot(tempi,tempj) = 1;
+                    M_depot(tempj,tempi) = 1;
+                end
+            end
         end
     end
+
+%% Distance
+[insData.Node.Distance,insData.Customer.Distance,...
+    insData.Depot.CustomerDistance,insData.Cluster.Distance,...
+    insData.Depot.ClusterDistance] = getDistance();
+
+    function [NodeNodeDist,CusCusdist,DepCusdist,CluCludist,DepCludist] = getDistance()
+        
+        NodeNodeDist = calEuclidean(insData.Node.Coord); %计算Node坐标两两的欧氏距离
+        CusCusdist = NodeNodeDist(DepotNumber+1:end,DepotNumber+1:end); % Customer之间的距离(不含Depot)
+        DepCusdist = NodeNodeDist(DepotNumber+1:end,1); % Depot到各Custoemr间的距离(不含depot本身)
+        
+        ClusterNode_Coord = [insData.Depot.Coord; insData.Cluster.Coord]; 
+        DepCluDepCluDist = calEuclidean(ClusterNode_Coord);
+        CluCludist = DepCluDepCluDist(DepotNumber+1:end,DepotNumber+1:end);  % Clusters之间的距离(不含Depot)        
+        DepCludist = DepCluDepCluDist(DepotNumber+1:end,1);  % Depot到Clusters的距离(不含Depot) 
+        % 3 获得Depot到每个质心的距离-作为固定成本 TSP_ClusterEdgeWeight
+         
+        function euclDist = calEuclidean(coord)    
+            % coord - n*2矩阵 坐标值
+            % euclDist - n*n矩阵 两两距离
+            num = length(coord);
+            euclDist = zeros([num, num]);
+            for iedge = 1:num
+                % create full matrix with edge weights (distances), every distance twice,
+                Diff1 = repmat(coord(iedge,:), [num 1]);
+                Diff2 = coord;
+                % NOTE 计算向量间欧式距离并取整 向上取整是否合适?
+                euclDist(iedge,:) = round(sqrt(sum(((Diff1 - Diff2).^2)')));
+            end
+        end
+        
+    end
+
+%% Vehicle (数据与车型相关，与Customer无关)
+% (Capacity;FixCost;VariableCost;PointCost;MaxPoint)
+insData.Vehicle.Capacity = ...
+    repelem(libData.VEHICLE_Capacity,libData.VEHICLE_Number);
+insData.Vehicle.FixCost =  ...
+    repelem(libData.VEHICLE_FixCost,libData.VEHICLE_Number);
+insData.Vehicle.VariableCost =  ...
+    repelem(libData.VEHICLE_VariableCost,libData.VEHICLE_Number);
+insData.Vehicle.PointCost =  ...
+    repelem(libData.VEHICLE_FeePoint,libData.VEHICLE_Number);
+insData.Vehicle.MaxPoint=  ...
+    repelem(libData.VEHICLE_MaxPoint,libData.VEHICLE_Number);
+
+%% Cost计算车辆费用矩阵
+% D.Depot.CustomerDistance'; % 以depot到聚类距离替换depot到customer距离 FIXME
+insData.Veh_Cus.FixCost = repmat(insData.Vehicle.FixCost, 1, CustomerNumber); % 每列相同
+insData.Veh_Cus.VarCost = insData.Vehicle.VariableCost * insData.Depot.CustomerDistance'; %NOTE 与距离正相关
+insData.Veh_Cus.Cost_Num = insData.Veh_Cus.FixCost + insData.Veh_Cus.VarCost; %简单相加
+insData.Veh_Cus.Cost_Type= unique(insData.Veh_Cus.Cost_Num, 'rows'); %等同M_cost （按车辆类别的成本）
+
+% 判断聚类需求计算是否有错
+% 判断总费用是否存在负数
+Flag1 = any( insData.Veh_Cus.Cost_Num(:) <= 0 ); %总费用存在负数
+% 判断M_cost矩阵计算是否有误
+Flag2 = size(insData.Veh_Cus.Cost_Type,1) ~= length(unique(insData.Vehicle.Capacity)); 
+Flag3 = size(insData.Veh_Cus.Cost_Type,2) ~= CustomerNumber;
+if Flag1 || Flag2 || Flag3, warning('车辆费用需求计算存在错误'); end
+
+
+%% 8 GET volume and weight 构建体积和重量 目前无用 但必须放入???
+% P_n = CustomerNumber;
+% P_NbType = length(V_MaxCapacity);
+% V_volVehicle = (ones(1,P_NbType)*P_n)';
+% V_weightVehicle = (ones(1,P_NbType)*P_n)';
+% V_volCustomer = (ones(1,P_n)*1);
+% V_weightCustomer =  (ones(1,P_n)*1);
 end
 
-function VRPStruct = VRP_Input(pathFileName,VRPStruct)
-%% Open the VRP data file and test for errors
-[fidtsplib, error_message] = fopen(pathFileName{1}, 'rt');
-if fidtsplib == -1
-    fprintf('error during fopen of data file (%s): %s\n', pathFileName, error_message);
-else
-    % Process data in the data file
-    while true
-        Line = fgetl(fidtsplib);             %%% fprintf(fid,'%c\n',Line);
-        if any([~ischar(Line), strcmp('EOF', Line)])
-            break
-        end
-        [VRPOpt, LineRem] = strtok(Line, ':'); %对变量Line按:符号进行划分
-        if strcmp('NAME', VRPOpt) == 1 %如果字符相等
-            VRPStruct.NAME = strtok(LineRem(2:end));
-        elseif strcmp('BEST_KNOWN', VRPOpt) == 1,
-            VRPStruct.BEST_KNOWN = strtok(LineRem(2:end));
-        elseif strcmp('COMMENT', VRPOpt) == 1,
-            VRPStruct.COMMENT = strtok(LineRem(2:end));
-        elseif strcmp('VEHICLE_TYPE', VRPOpt) == 1,
-            VRPStruct.VEHICLE_TYPE = sscanf(strtok(LineRem(2:end)), '%g');
-        elseif strcmp('DIMENSION', VRPOpt) == 1,
-            VRPStruct.DIMENSION = sscanf(strtok(LineRem(2:end)), '%g');
-        elseif strcmp('EDGE_WEIGHT_FORMAT', VRPOpt) == 1,
-            VRPStruct.EDGE_WEIGHT_FORMAT = strtok(LineRem(2:end));
-        elseif strcmp('EDGE_WEIGHT_TYPE', VRPOpt) == 1,
-            VRPStruct.EDGE_WEIGHT_TYPE = strtok(LineRem(2:end));
-        elseif strcmp('VEHICLE_SECTION', VRPOpt) == 1,
-            for IxData = 1:VRPStruct.VEHICLE_TYPE,
-                Line = fgetl(fidtsplib); %读取一行
-                Data = sscanf(Line, '%g'); %分布读入数据
-                VRPStruct.VEHICLE_Capacity(IxData, :) = Data(1)'; %读入
-                VRPStruct.VEHICLE_FixCost(IxData, :) = Data(2)'; %读入
-                VRPStruct.VEHICLE_VariableCost(IxData, :) = Data(3)'; %读入
-                VRPStruct.VEHICLE_Number(IxData, :) = Data(4)'; %读入
-                VRPStruct.VEHICLE_FeePoint(IxData, :) = Data(5)'; %读入
-                VRPStruct.VEHICLE_MaxPoint(IxData, :) = Data(6)'; %读入              
-            end
-            % 坐标和需求量混合到一起
-        elseif strcmp('NODE_COORD_DEMAND_SECTION', VRPOpt) == 1,
-            for IxData = 1: VRPStruct.DIMENSION,
-                Line = fgetl(fidtsplib); %读取一行
-                Data = sscanf(Line, '%g'); %分布读入数据
-                VRPStruct.Node_Coord(IxData, :) = Data(2:3)'; %读入坐标Node_Coord
-                VRPStruct.Node_Demand(IxData, :) = Data(4:end)'; %读入需求率Demand
-            end
-        elseif strcmp('DEPOT_SECTION', VRPOpt) == 1,
-            IxData = 1;
-            while IxData
-                Line = fgetl(fidtsplib);             %%% fprintf(fid,'%c\n',Line);
-                if any([~ischar(Line), strcmp('EOF', Line)])
-                    break
-                end
-                Data = sscanf(Line, '%g'); %分布读入数据
-                VRPStruct.DEPOT_SECTION(IxData, :) = Data(1:end)';
-                IxData = IxData + 1;
-            end
-        end
-    end
-    fclose(fidtsplib);
-end %关闭文件
-end
-
-function CCVRPStruct = CCVRP_Input(pathFileName,CCVRPStruct)
-%% Open the CCVRP data file and test for errors
-[fidtsplib, error_message] = fopen(pathFileName{1}, 'rt');
-if fidtsplib == -1
-    fprintf('error during fopen of data file (%s): %s\n', pathFileName, error_message);
-else
-    % Process data in the data file
-    while true
-        Line = fgetl(fidtsplib);             %%% fprintf(fid,'%c\n',Line);
-        if any([~ischar(Line), strcmp('EOF', Line)])
-            break
-        end
-        [VRPOpt, LineRem] = strtok(Line, ':'); %对变量Line按:符号进行划分
-        VRPOpt = strtrim(VRPOpt);
-        if strcmp('NAME', VRPOpt) == 1 %如果字符相等
-            CCVRPStruct.NAME = strtok(LineRem(2:end));
-        elseif strcmp('TYPE', VRPOpt) == 1,
-            CCVRPStruct.TYPE = strtok(LineRem(2:end));
-        elseif strcmp('COMMENT', VRPOpt) == 1,
-            CCVRPStruct.COMMENT = strtok(LineRem(2:end));
-        elseif strcmp('DIMENSION', VRPOpt) == 1,
-            CCVRPStruct.DIMENSION = sscanf(strtok(LineRem(2:end)), '%g');
-        elseif strcmp('CAPACITY', VRPOpt) == 1,
-            CCVRPStruct.CAPACITY = sscanf(strtok(LineRem(2:end)), '%g');
-        elseif strcmp('EDGE_WEIGHT_TYPE', VRPOpt) == 1,
-            CCVRPStruct.EDGE_WEIGHT_TYPE = strtok(LineRem(2:end));
-        elseif strcmp('NODE_COORD_TYPE', VRPOpt) == 1,
-            CCVRPStruct.NODE_COORD_TYPE = strtok(LineRem(2:end));
-        elseif strcmp('NODE_COORD_SECTION', VRPOpt) == 1,
-            for IxData = 1:CCVRPStruct.DIMENSION,
-                Line = fgetl(fidtsplib); %读取一行
-                Data = sscanf(Line, '%g'); %分布读入数据
-                CCVRPStruct.Node_Coord(IxData, :) = Data(2:3)'; %读入坐标Node_Coord
-            end
-        elseif strcmp('DEMAND_SECTION', VRPOpt) == 1,
-            for IxData = 1:CCVRPStruct.DIMENSION,
-                Line = fgetl(fidtsplib); %读取一行
-                Data = sscanf(Line, '%g'); %分布读入数据
-                CCVRPStruct.Demand(IxData, :) = Data(2:2)'; %读入坐标Demand
-            end
-        elseif strcmp('CLUSTER_SECTION', VRPOpt) == 1,
-            for IxData = 1:CCVRPStruct.DIMENSION,
-                Line = fgetl(fidtsplib); %读取一行
-                Data = sscanf(Line, '%g'); %分布读入数据
-                CCVRPStruct.Cluster(IxData, :) = Data(2:2)'; %读入坐标Cluster
-            end
-        elseif strcmp('DEPOT_SECTION', VRPOpt) == 1,
-            IxData = 1;
-            while IxData
-                Line = fgetl(fidtsplib);             %%% fprintf(fid,'%c\n',Line);
-                if any([~ischar(Line), strcmp('EOF', Line)])
-                    break
-                end
-                Data = sscanf(Line, '%g'); %分布读入数据
-                CCVRPStruct.DEPOT_SECTION(IxData, :) = Data(1:end)';
-                IxData = IxData + 1;
-            end
-        end
-    end
-    disp(CCVRPStruct)
-    fclose(fidtsplib);
-end %关闭文件
-end
