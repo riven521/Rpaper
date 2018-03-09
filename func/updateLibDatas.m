@@ -34,7 +34,7 @@ fprintf('Updating file with updateLibDatas() ... done \n');
 
 %%
 % 判断lib数据: 是否为合理数据
-if all(arrayfun(@checkInsDatas,insDatas)), fprintf("All data is corrected ! "); end
+if all(arrayfun(@checkInsDatas,insDatas)), fprintf("All data is corrected ! \n\n "); end
 
 %% function VRP_Update(libData,insData,arg)
 % 
@@ -113,6 +113,10 @@ if all(arrayfun(@checkInsDatas,insDatas)), fprintf("All data is corrected ! "); 
             % NOTE 说明 连通性生成技巧{ % gamma 越大, 0的个数越多, 连通性越好
             % GET M_Cludepot  聚类连通性 (0:可连通; 1:不可连通)
             n = length(insData.Cluster.Demand);
+            if n==1,
+                M_Cludepot = 0;
+                M_depot = zeros(CustomerNumber,CustomerNumber);
+            else
             gamma = arg.gamma;  % ClusterNumber=5 % gamma = 0.5;
             % 计算totalZeros :一共需要的0的个数,属于范围:[minZeros,maxZeros]
             % gamma = 0.5; 应恰好只有一半连通性
@@ -138,6 +142,7 @@ if all(arrayfun(@checkInsDatas,insDatas)), fprintf("All data is corrected ! "); 
                     %   fprintf('x = %d = y = %d or M_Cludepot(x,y) = %d \n',x,y,M_Cludepot(x,y))
                 end
             end
+            
             
             % GET M_depot 点点连通性 基于聚类连通性的扩展
             % FIXME 去除for
@@ -165,6 +170,8 @@ if all(arrayfun(@checkInsDatas,insDatas)), fprintf("All data is corrected ! "); 
             else
                 %             fprintf('CORRECT : totalZeros = %d in [%d, %d] and gamma = %d, \n',totalZeros,minZeros,maxZeros,gamma);
             end
+            end
+            
         end
         
        %% Distance 
@@ -224,7 +231,7 @@ if all(arrayfun(@checkInsDatas,insDatas)), fprintf("All data is corrected ! "); 
         insData.Veh_Cus.FixCost = repmat(insData.Vehicle.FixCost, 1, CustomerNumber); % 每列相同
         insData.Veh_Cus.VarCost = insData.Vehicle.VariableCost * insData.Depot.CustomerDistance'; %NOTE 与距离正相关
         insData.Veh_Cus.Cost_Num = insData.Veh_Cus.FixCost + insData.Veh_Cus.VarCost; %简单相加
-        insData.Veh_Cus.Cost_Type= unique(insData.Veh_Cus.Cost_Num, 'rows'); %等同M_cost （按车辆类别的成本）
+        insData.Veh_Cus.Cost_Type= unique(insData.Veh_Cus.Cost_Num, 'rows'); %等同M_cost （按车辆类别的成本） NOTE:车辆类别完全按费用划分
         
        %% fprintf
         fprintf('Updating file (%s) ... done \n',libData.NAME );
